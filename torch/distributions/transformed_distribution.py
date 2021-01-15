@@ -69,7 +69,17 @@ class TransformedDistribution(Distribution):
 
     @constraints.dependent_property(is_discrete=False)
     def support(self):
-        return self.transforms[-1].codomain if self.transforms else self.base_dist.support
+        if not self.transforms:
+            return self.base_dist.support
+        support = self.transforms[-1].codomain
+        # Adjust event_dim by maximum among transforms.
+        event_dim = self.base_dist.support.event_dim
+        for t in self.transforms:
+            event_dim = max(event_dim, t.domain.event_dim)
+            event_dim += t.codomain.event_dim - t.domain.event_dim
+        if event_dim > support.event_dim:
+            support = constraints.independent(support, event_dim - support.event_dim)
+        return support
 
     @property
     def has_rsample(self):

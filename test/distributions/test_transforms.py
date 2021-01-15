@@ -366,5 +366,21 @@ def test_jacobian(transform):
     assert torch.allclose(actual, expected, atol=1e-5)
 
 
+@pytest.mark.parametrize("event_dims",
+                         [(0,), (1,), (2, 3), (0, 1, 2), (1, 2, 0), (2, 0, 1)],
+                         ids=str)
+def test_compose_event_dim(event_dims):
+    transforms = [AffineTransform(0, 1, event_dim=e) for e in event_dims]
+    transform = ComposeTransform(transforms)
+    assert transform.codomain.event_dim == max(event_dims)
+    assert transform.domain.event_dim == max(event_dims)
+
+    dist = TransformedDistribution(Normal(0, 1), transform.parts)
+    assert dist.support.event_dim == max(event_dims)
+
+    dist = TransformedDistribution(Dirichlet(torch.ones(5)), transform.parts)
+    assert dist.support.event_dim == max(1, max(event_dims))
+
+
 if __name__ == '__main__':
     pytest.main([__file__])
