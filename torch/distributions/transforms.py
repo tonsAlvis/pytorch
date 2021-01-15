@@ -375,6 +375,12 @@ class IndependentTransform(Transform):
     def sign(self):
         return self.base_transform.sign
 
+    def _call(self, x):
+        return self.base_transform(x)
+
+    def _inverse(self, y):
+        return self.base_transform.inv(y)
+
     def log_abs_det_jacobian(self, x, y):
         result = self.base_transform.log_abs_det_jacobian(x, y)
         result = _sum_rightmost(result, self.reinterpreted_batch_ndims)
