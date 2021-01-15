@@ -184,14 +184,14 @@ class Transform(object):
 
     def forward_shape(self, shape):
         """
-        Infers the batch and event shapes of the forward computation.
+        Infers the shape of the forward computation, given the input shape.
         Defaults to preserving shape.
         """
         return shape
 
     def inverse_shape(self, shape):
         """
-        Infers the batch and event shapes of the inverse computation.
+        Infers the shapes of the inverse computation, given the output shape.
         Defaults to preserving shape.
         """
         return shape
