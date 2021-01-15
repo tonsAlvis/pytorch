@@ -275,7 +275,7 @@ class ComposeTransform(Transform):
         codomain = self.parts[-1].codomain
         # Adjust event_dim to be maximum among all parts.
         event_dim = self.parts[0].domain.event_dim
-        for part in reversed(self.parts):
+        for part in self.parts:
             event_dim += part.codomain.event_dim - part.domain.event_dim
             event_dim = max(event_dim, part.codomain.event_dim)
         assert event_dim >= codomain.event_dim
