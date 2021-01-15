@@ -180,8 +180,10 @@ def test_forward_inverse(transform, test_cached):
         y = transform(x)
     except NotImplementedError:
         pytest.skip('Not implemented.')
+    assert y.shape == transform.forward_shape(x.shape)
     if test_cached:
         x2 = transform.inv(y)  # should be implemented at least by caching
+        x2.shape == transform.inverse_shape(y.shape)
     else:
         try:
             x2 = transform.inv(y.clone())  # bypass cache

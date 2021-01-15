@@ -182,33 +182,19 @@ class Transform(object):
     def __repr__(self):
         return self.__class__.__name__ + '()'
 
-    def forward_shapes(self, batch_shape, event_shape):
+    def forward_shape(self, shape):
         """
         Infers the batch and event shapes of the forward computation.
-        Defaults to preserving total shape but ensuring minimum event_dim.
+        Defaults to preserving shape.
         """
-        if self.codomain.event_dim > len(event_shape):
-            shape = batch_shape + event_shape
-            if self.codomain.event_dim > len(shape):
-                raise ValueError("Too few dimensions in input")
-            cut = len(shape) - self.codomain.event_dim
-            batch_shape = shape[:cut]
-            event_shape = shape[cut:]
-        return batch_shape, event_shape
+        return shape
 
-    def inverse_shapes(self, batch_shape, event_shape):
+    def inverse_shape(self, shape):
         """
         Infers the batch and event shapes of the inverse computation.
-        Defaults to preserving total shape but ensuring minimum event_dim.
+        Defaults to preserving shape.
         """
-        if self.domain.event_dim > len(event_shape):
-            shape = batch_shape + event_shape
-            if self.domain.event_dim > len(shape):
-                raise ValueError("Too few dimensions in input")
-            cut = len(shape) - self.domain.event_dim
-            batch_shape = shape[:cut]
-            event_shape = shape[cut:]
-        return batch_shape, event_shape
+        return shape
 
 
 class _InverseTransform(Transform):
@@ -262,11 +248,11 @@ class _InverseTransform(Transform):
         assert self._inv is not None
         return -self._inv.log_abs_det_jacobian(y, x)
 
-    def forward_shapes(self, batch_shape, event_shape):
-        return self._inv.inverse_shapes(batch_shape, event_shape)
+    def forward_shape(self, shape):
+        return self._inv.inverse_shape(shape)
 
-    def inverse_shapes(self, batch_shape, event_shape):
-        return self._inv.forward_shapes(batch_shape, event_shape)
+    def inverse_shape(self, shape):
+        return self._inv.forward_shape(shape)
 
 
 class ComposeTransform(Transform):
@@ -370,11 +356,15 @@ class ComposeTransform(Transform):
             event_dim += part.codomain.event_dim - part.domain.event_dim
         return functools.reduce(operator.add, terms)
 
-    def forward_shapes(self, batch_shape, event_shape):
-        return self._inv.inverse_shapes(batch_shape, event_shape)
+    def forward_shape(self, shape):
+        for part in self.parts:
+            shape = part.forward_shape(shape)
+        return shape
 
-    def inverse_shapes(self, batch_shape, event_shape):
-        return self._inv.forward_shapes(batch_shape, event_shape)
+    def inverse_shape(self, shape):
+        for part in reversed(self.parts):
+            shape = part.inverse_shape(shape)
+        return shape
 
     def __repr__(self):
         fmt_string = self.__class__.__name__ + '(\n    '
@@ -433,14 +423,6 @@ class IndependentTransform(Transform):
         result = _sum_rightmost(result, self.reinterpreted_batch_ndims)
         return result
 
-    def forward_shapes(self, batch_shape, event_shape):
-        batch_shape, event_shape = self.base_dist.forward_shapes(batch_shape, event_shape)
-        return super().forward_shapes(batch_shape, event_shape)
-
-    def inverse_shapes(self, batch_shape, event_shape):
-        batch_shape, event_shape = self.base_dist.inverse_shapes(batch_shape, event_shape)
-        return super().inverse_shapes(batch_shape, event_shape)
-
     def __repr__(self):
         return f"{self.__class__.__name__}({repr(self.base_transform)}, {self.reinterpreted_batch_ndims})"
 
@@ -483,31 +465,21 @@ class ReshapeTransform(Transform):
         batch_shape = x.shape[:x.dim() - len(self.in_shape)]
         return x.new_zeros(batch_shape)
 
-    def forward_shapes(self, batch_shape, event_shape):
-        shape = batch_shape + event_shape
+    def forward_shape(self, shape):
         if len(shape) < len(self.in_shape):
             raise ValueError("Too few dimensions on input")
         cut = len(shape) - len(self.in_shape)
         if shape[cut:] != self.in_shape:
             raise ValueError("Shape mismatch: expected {} but got {}".format(shape[cut:], self.in_shape))
-        shape = shape[:cut] + self.out_shape
-        event_dim = max(len(event_shape), self.domain.event_dim)
-        event_dim += self.codomain.event_dim - self.domain.event_dim
-        cut = len(shape) - event_dim
-        return shape[:cut], shape[cut:]
+        return shape[:cut] + self.out_shape
 
-    def inverse_shapes(self, batch_shape, event_shape):
-        shape = batch_shape + event_shape
+    def inverse_shape(self, shape):
         if len(shape) < len(self.out_shape):
             raise ValueError("Too few dimensions on input")
         cut = len(shape) - len(self.out_shape)
         if shape[cut:] != self.out_shape:
             raise ValueError("Shape mismatch: expected {} but got {}".format(shape[cut:], self.out_shape))
-        shape = shape[:cut] + self.in_shape
-        event_dim = max(len(event_shape), self.codomain.event_dim)
-        event_dim += self.domain.event_dim - self.codomain.event_dim
-        cut = len(shape) - event_dim
-        return shape[:cut], shape[cut:]
+        return shape[:cut] + self.in_shape
 
 
 class ExpTransform(Transform):
@@ -728,19 +700,15 @@ class AffineTransform(Transform):
             shape = shape[:-self.event_dim]
         return result.expand(shape)
 
-    def forward_shapes(self, batch_shape, event_shape):
-        shape = torch.broadcast_shapes(batch_shape + event_shape,
-                                       getattr(self.loc, "shape", ()),
-                                       getattr(self.scale, "shape", ()))
-        cut = len(shape) - len(event_shape)
-        return super().forward_shapes(shape[:cut], shape[cut:])
+    def forward_shape(self, shape):
+        return torch.broadcast_shapes(shape,
+                                      getattr(self.loc, "shape", ()),
+                                      getattr(self.scale, "shape", ()))
 
-    def inverse_shapes(self, batch_shape, event_shape):
-        shape = torch.broadcast_shapes(batch_shape + event_shape,
-                                       getattr(self.loc, "shape", ()),
-                                       getattr(self.scale, "shape", ()))
-        cut = len(shape) - len(event_shape)
-        return super().inverse_shapes(shape[:cut], shape[cut:])
+    def inverse_shape(self, shape):
+        return torch.broadcast_shapes(shape,
+                                      getattr(self.loc, "shape", ()),
+                                      getattr(self.scale, "shape", ()))
 
 
 class CorrCholeskyTransform(Transform):
@@ -804,41 +772,25 @@ class CorrCholeskyTransform(Transform):
         tanh_logdet = -2 * (x + softplus(-2 * x) - math.log(2.)).sum(dim=-1)
         return stick_breaking_logdet + tanh_logdet
 
-    def forward_shapes(self, batch_shape, event_shape):
+    def forward_shape(self, shape):
         # Reshape from (..., N) to (..., D, D).
-        shape = batch_shape + event_shape
         if len(shape) < 1:
             raise ValueError("Too few dimensions in input")
         N = shape[-1]
-        D = 1 + int(round(N ** 0.5))
+        D = 1 + int(round((2 * N) ** 0.5))
         if D * (D - 1) // 2 != N:
             raise ValueError("Input is not a flattend lower-diagonal number")
-        shape = shape[:-1] + (D, D)
+        return shape[:-1] + (D, D)
 
-        # Set correct event_dim.
-        event_dim = max(2, len(event_shape) + 1)
-        cut = len(shape) - event_dim
-        batch_shape = shape[:cut]
-        event_shape = shape[cut:]
-        return batch_shape, event_shape
-
-    def inverse_shapes(self, batch_shape, event_shape):
+    def inverse_shape(self, shape):
         # Reshape from (..., D, D) to (..., N).
-        shape = batch_shape + event_shape
         if len(shape) < 2:
             raise ValueError("Too few dimensions on input")
         if shape[-2] != shape[-1]:
             raise ValueError("Input is not square")
         D = shape[-1]
         N = D * (D - 1) // 2
-        shape = shape[:-2] + (N,)
-
-        # Set correct event_dim.
-        event_dim = max(1, len(event_shape) - 1)
-        cut = len(shape) - event_dim
-        batch_shape = shape[:cut]
-        event_shape = shape[cut:]
-        return batch_shape, event_shape
+        return shape[:-2] + (N,)
 
 
 class SoftmaxTransform(Transform):
@@ -910,21 +862,15 @@ class StickBreakingTransform(Transform):
         detJ = (-x + F.logsigmoid(x) + y[..., :-1].log()).sum(-1)
         return detJ
 
-    def forward_shapes(self, batch_shape, event_shape):
-        shape = batch_shape + event_shape
+    def forward_shape(self, shape):
         if len(shape) < 1:
             raise ValueError("Too few dimensions on input")
-        shape = shape[:-1] + (shape[-1] + 1,)
-        cut = len(shape) - len(event_shape)
-        return super().forward_shapes(shape[:cut], shape[cut:])
+        return shape[:-1] + (shape[-1] + 1,)
 
-    def inverse_shapes(self, batch_shape, event_shape):
-        shape = batch_shape + event_shape
+    def inverse_shape(self, shape):
         if len(shape) < 1:
             raise ValueError("Too few dimensions on input")
-        shape = shape[:-1] + (shape[-1] - 1,)
-        cut = len(shape) - len(event_shape)
-        return super().forward_shapes(shape[:cut], shape[cut:])
+        return shape[:-1] + (shape[-1] - 1,)
 
 
 class LowerCholeskyTransform(Transform):

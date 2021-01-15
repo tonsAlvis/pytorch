@@ -51,21 +51,25 @@ class TransformedDistribution(Distribution):
             self.transforms = transforms
         else:
             raise ValueError("transforms must be a Transform or list, but was {}".format(transforms))
-        batch_shape = self.base_dist.batch_shape
-        event_shape = self.base_dist.event_shape
+        shape = self.base_dist.batch_shape + self.base_dist.event_shape
+        event_dim = self.base_dist.support.event_dim
         for t in self.transforms:
-            print(f"DEBUG {batch_shape}, {event_shape}")
-            batch_shape, event_shape = t.forward_shapes(batch_shape, event_shape)
+            shape = t.forward_shape(shape)
+            event_dim += t.codomain.event_dim - t.domain.event_dim
+            event_dim = max(event_dim, t.codomain.event_dim)
+        assert len(shape) >= event_dim
+        cut = len(shape) - event_dim
+        batch_shape = shape[:cut]
+        event_shape = shape[cut:]
         print(f"DEBUG {batch_shape}, {event_shape}")
         super(TransformedDistribution, self).__init__(batch_shape, event_shape, validate_args=validate_args)
 
     def expand(self, batch_shape, _instance=None):
         new = self._get_checked_instance(TransformedDistribution, _instance)
         batch_shape = torch.Size(batch_shape)
-        b, e = batch_shape, self.event_shape
+        shape = batch_shape + self.event_shape
         for t in reversed(self.transforms):
-            b, e = t.inverse_shapes(b, e)
-        shape = b + e
+            shape = t.inverse_shape(shape)
         base_batch_shape = shape[:len(shape) - len(self.base_dist.event_shape)]
         new.base_dist = self.base_dist.expand(base_batch_shape)
         new.transforms = self.transforms
