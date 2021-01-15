@@ -179,6 +179,34 @@ class Transform(object):
     def __repr__(self):
         return self.__class__.__name__ + '()'
 
+    def forward_shapes(self, batch_shape, event_shape):
+        """
+        Infers the batch and event shapes of the forward computation.
+        Defaults to preserving total shape but ensuring minimum event_dim.
+        """
+        if self.codomain.event_dim > len(event_shape):
+            shape = batch_shape + event_shape
+            if self.codomain.event_dim > len(shape):
+                raise ValueError("Too few dimensions in input")
+            cut = len(shape) - self.codomain.event_dim
+            batch_shape = shape[:cut]
+            event_shape = shape[cut:]
+        return batch_shape, event_shape
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        """
+        Infers the batch and event shapes of the inverse computation.
+        Defaults to preserving total shape but ensuring minimum event_dim.
+        """
+        if self.domain.event_dim > len(event_shape):
+            shape = batch_shape + event_shape
+            if self.domain.event_dim > len(shape):
+                raise ValueError("Too few dimensions in input")
+            cut = len(shape) - self.domain.event_dim
+            batch_shape = shape[:cut]
+            event_shape = shape[cut:]
+        return batch_shape, event_shape
+
 
 class _InverseTransform(Transform):
     """
@@ -230,6 +258,12 @@ class _InverseTransform(Transform):
     def log_abs_det_jacobian(self, x, y):
         assert self._inv is not None
         return -self._inv.log_abs_det_jacobian(y, x)
+
+    def forward_shapes(self, batch_shape, event_shape):
+        return self._inv.inverse_shapes(batch_shape, event_shape)
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        return self._inv.forward_shapes(batch_shape, event_shape)
 
 
 class ComposeTransform(Transform):
@@ -329,6 +363,12 @@ class ComposeTransform(Transform):
                                          self.event_dim - part.event_dim)
         return result
 
+    def forward_shapes(self, batch_shape, event_shape):
+        return self._inv.inverse_shapes(batch_shape, event_shape)
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        return self._inv.forward_shapes(batch_shape, event_shape)
+
     def __repr__(self):
         fmt_string = self.__class__.__name__ + '(\n    '
         fmt_string += ',\n    '.join([p.__repr__() for p in self.parts])
@@ -385,6 +425,14 @@ class IndependentTransform(Transform):
         result = self.base_transform.log_abs_det_jacobian(x, y)
         result = _sum_rightmost(result, self.reinterpreted_batch_ndims)
         return result
+
+    def forward_shapes(self, batch_shape, event_shape):
+        batch_shape, event_shape = self.base_dist.forward_shapes(batch_shape, event_shape)
+        return super().forward_shapes(batch_shape, event_shape)
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        batch_shape, event_shape = self.base_dist.inverse_shapes(batch_shape, event_shape)
+        return super().inverse_shapes(batch_shape, event_shape)
 
 
 class ExpTransform(Transform):
@@ -605,6 +653,20 @@ class AffineTransform(Transform):
             shape = shape[:-self.event_dim]
         return result.expand(shape)
 
+    def forward_shapes(self, batch_shape, event_shape):
+        shape = torch.broadcast_shapes(batch_shape + event_shape,
+                                       getattr(self.loc, "shape", ()),
+                                       getattr(self.scale, "shape", ()))
+        cut = len(shape) - len(event_shape)
+        return super().forward_shapes(shape[:cut], shape[cut:])
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        shape = torch.broadcast_shapes(batch_shape + event_shape,
+                                       getattr(self.loc, "shape", ()),
+                                       getattr(self.scale, "shape", ()))
+        cut = len(shape) - len(event_shape)
+        return super().inverse_shapes(shape[:cut], shape[cut:])
+
 
 class CorrCholeskyTransform(Transform):
     r"""
@@ -666,6 +728,42 @@ class CorrCholeskyTransform(Transform):
         stick_breaking_logdet = 0.5 * (y1m_cumsum_tril).log().sum(-1)
         tanh_logdet = -2 * (x + softplus(-2 * x) - math.log(2.)).sum(dim=-1)
         return stick_breaking_logdet + tanh_logdet
+
+    def forward_shapes(self, batch_shape, event_shape):
+        # Reshape from (..., N) to (..., D, D).
+        shape = batch_shape + event_shape
+        if len(shape) < 1:
+            raise ValueError("Too few dimensions in input")
+        N = shape[-1]
+        D = 1 + int(round(N ** 0.5))
+        if D * (D - 1) // 2 != N:
+            raise ValueError("Input is not a flattend lower-diagonal number")
+        shape = shape[:-1] + (D, D)
+
+        # Set correct event_dim.
+        event_dim = max(2, len(event_shape) + 1)
+        cut = len(shape) - event_dim
+        batch_shape = shape[:cut]
+        event_shape = shape[cut:]
+        return batch_shape, event_shape
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        # Reshape from (..., D, D) to (..., N).
+        shape = batch_shape + event_shape
+        if len(shape) < 2:
+            raise ValueError("Too few dimensions on input")
+        if shape[-2] != shape[-1]:
+            raise ValueError("Input is not square")
+        D = shape[-1]
+        N = D * (D - 1) // 2
+        shape = shape[:-2] + (N,)
+
+        # Set correct event_dim.
+        event_dim = max(1, len(event_shape) - 1)
+        cut = len(shape) - event_dim
+        batch_shape = shape[:cut]
+        event_shape = shape[cut:]
+        return batch_shape, event_shape
 
 
 class SoftmaxTransform(Transform):
@@ -736,6 +834,22 @@ class StickBreakingTransform(Transform):
         # use the identity 1 - sigmoid(x) = exp(-x) * sigmoid(x)
         detJ = (-x + F.logsigmoid(x) + y[..., :-1].log()).sum(-1)
         return detJ
+
+    def forward_shapes(self, batch_shape, event_shape):
+        shape = batch_shape + event_shape
+        if len(shape) < 1:
+            raise ValueError("Too few dimensions on input")
+        shape = shape[:-1] + (shape[-1] + 1,)
+        cut = len(shape) - len(event_shape)
+        return super().forward_shapes(shape[:cut], shape[cut:])
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        shape = batch_shape + event_shape
+        if len(shape) < 1:
+            raise ValueError("Too few dimensions on input")
+        shape = shape[:-1] + (shape[-1] - 1,)
+        cut = len(shape) - len(event_shape)
+        return super().forward_shapes(shape[:cut], shape[cut:])
 
 
 class LowerCholeskyTransform(Transform):

@@ -370,7 +370,7 @@ def test_jacobian(transform):
                          [(0,), (1,), (2, 3), (0, 1, 2), (1, 2, 0), (2, 0, 1)],
                          ids=str)
 def test_compose_event_dim(event_dims):
-    transforms = [AffineTransform(0, 1, event_dim=e) for e in event_dims]
+    transforms = [AffineTransform(torch.zeros((1,) * e), 1, event_dim=e) for e in event_dims]
     transform = ComposeTransform(transforms)
     assert transform.codomain.event_dim == max(event_dims)
     assert transform.domain.event_dim == max(event_dims)
