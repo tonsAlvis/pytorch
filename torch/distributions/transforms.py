@@ -1,5 +1,7 @@
+import functools
 import math
 import numbers
+import operator
 import weakref
 
 import torch
@@ -22,6 +24,7 @@ __all__ = [
     'IndependentTransform',
     'LowerCholeskyTransform',
     'PowerTransform',
+    'ReshapeTransform',
     'SigmoidTransform',
     'TanhTransform',
     'SoftmaxTransform',
@@ -352,16 +355,20 @@ class ComposeTransform(Transform):
     def log_abs_det_jacobian(self, x, y):
         if not self.parts:
             return torch.zeros_like(x)
-        result = 0
+
+        # Compute intermediates. This will be free if parts[:-1] are all cached.
+        xs = [x]
         for part in self.parts[:-1]:
-            y_tmp = part(x)
-            result = result + _sum_rightmost(part.log_abs_det_jacobian(x, y_tmp),
-                                             self.event_dim - part.event_dim)
-            x = y_tmp
-        part = self.parts[-1]
-        result = result + _sum_rightmost(part.log_abs_det_jacobian(x, y),
-                                         self.event_dim - part.event_dim)
-        return result
+            xs.append(part(xs[-1]))
+        xs.append(y)
+
+        terms = []
+        event_dim = self.domain.event_dim
+        for part, x, y in zip(self.parts, xs[:-1], xs[1:]):
+            terms.append(_sum_rightmost(part.log_abs_det_jacobian(x, y),
+                                        event_dim - part.domain.event_dim))
+            event_dim += part.codomain.event_dim - part.domain.event_dim
+        return functools.reduce(operator.add, terms)
 
     def forward_shapes(self, batch_shape, event_shape):
         return self._inv.inverse_shapes(batch_shape, event_shape)
@@ -433,6 +440,74 @@ class IndependentTransform(Transform):
     def inverse_shapes(self, batch_shape, event_shape):
         batch_shape, event_shape = self.base_dist.inverse_shapes(batch_shape, event_shape)
         return super().inverse_shapes(batch_shape, event_shape)
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({repr(self.base_transform)}, {self.reinterpreted_batch_ndims})"
+
+
+class ReshapeTransform(Transform):
+    """
+    Unit Jacobian transform to reshape the rightmost part of a tensor.
+    """
+    bijective = True
+
+    def __init__(self, in_shape, out_shape, cache_size=0):
+        self.in_shape = torch.Size(in_shape)
+        self.out_shape = torch.Size(out_shape)
+        if self.in_shape.numel() != self.out_shape.numel():
+            raise ValueError("in_shape, out_shape have different numbers of elements")
+        super().__init__(cache_size=cache_size)
+
+    @constraints.dependent_property
+    def domain(self):
+        return constraints.independent(constraints.real, len(self.in_shape))
+
+    @constraints.dependent_property
+    def codomain(self):
+        return constraints.independent(constraints.real, len(self.out_shape))
+
+    def with_cache(self, cache_size=1):
+        if self._cache_size == cache_size:
+            return self
+        return ReshapeTransform(self.in_shape, self.out_shape, cache_size=cache_size)
+
+    def _call(self, x):
+        batch_shape = x.shape[:x.dim() - len(self.in_shape)]
+        return x.reshape(batch_shape + self.out_shape)
+
+    def _inverse(self, y):
+        batch_shape = y.shape[:y.dim() - len(self.out_shape)]
+        return y.reshape(batch_shape + self.in_shape)
+
+    def log_abs_det_jacobian(self, x, y):
+        batch_shape = x.shape[:x.dim() - len(self.in_shape)]
+        return x.new_zeros(batch_shape)
+
+    def forward_shapes(self, batch_shape, event_shape):
+        shape = batch_shape + event_shape
+        if len(shape) < len(self.in_shape):
+            raise ValueError("Too few dimensions on input")
+        cut = len(shape) - len(self.in_shape)
+        if shape[cut:] != self.in_shape:
+            raise ValueError("Shape mismatch: expected {} but got {}".format(shape[cut:], self.in_shape))
+        shape = shape[:cut] + self.out_shape
+        event_dim = max(len(event_shape), self.domain.event_dim)
+        event_dim += self.codomain.event_dim - self.domain.event_dim
+        cut = len(shape) - event_dim
+        return shape[:cut], shape[cut:]
+
+    def inverse_shapes(self, batch_shape, event_shape):
+        shape = batch_shape + event_shape
+        if len(shape) < len(self.out_shape):
+            raise ValueError("Too few dimensions on input")
+        cut = len(shape) - len(self.out_shape)
+        if shape[cut:] != self.out_shape:
+            raise ValueError("Shape mismatch: expected {} but got {}".format(shape[cut:], self.out_shape))
+        shape = shape[:cut] + self.in_shape
+        event_dim = max(len(event_shape), self.codomain.event_dim)
+        event_dim += self.domain.event_dim - self.codomain.event_dim
+        cut = len(shape) - event_dim
+        return shape[:cut], shape[cut:]
 
 
 class ExpTransform(Transform):

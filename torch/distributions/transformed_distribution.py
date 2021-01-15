@@ -54,7 +54,9 @@ class TransformedDistribution(Distribution):
         batch_shape = self.base_dist.batch_shape
         event_shape = self.base_dist.event_shape
         for t in self.transforms:
+            print(f"DEBUG {batch_shape}, {event_shape}")
             batch_shape, event_shape = t.forward_shapes(batch_shape, event_shape)
+        print(f"DEBUG {batch_shape}, {event_shape}")
         super(TransformedDistribution, self).__init__(batch_shape, event_shape, validate_args=validate_args)
 
     def expand(self, batch_shape, _instance=None):
