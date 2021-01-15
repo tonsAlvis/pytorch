@@ -67,7 +67,7 @@ class TransformedDistribution(Distribution):
         new._validate_args = self._validate_args
         return new
 
-    @constraints.dependent_property
+    @constraints.dependent_property(is_discrete=False)
     def support(self):
         return self.transforms[-1].codomain if self.transforms else self.base_dist.support
 

@@ -878,6 +878,22 @@ class TestDistributions(TestCase):
                 self.assertIn(Dist, distributions_with_examples,
                               "Please add {} to the EXAMPLES list in test_distributions.py".format(Dist.__name__))
 
+    def test_support_attributes(self):
+        for Dist, params in EXAMPLES:
+            for param in params:
+                d = Dist(**param)
+                event_dim = len(d.event_shape)
+                self.assertEqual(d.support.event_dim, event_dim)
+                try:
+                    self.assertEqual(Dist.support.event_dim, event_dim)
+                except NotImplementedError:
+                    pass
+                is_discrete = d.support.is_discrete
+                try:
+                    self.assertEqual(Dist.support.is_discrete, is_discrete)
+                except NotImplementedError:
+                    pass
+
     def test_distribution_expand(self):
         shapes = [torch.Size(), torch.Size((2,)), torch.Size((2, 1))]
         for Dist, params in EXAMPLES:

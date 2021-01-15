@@ -6,7 +6,7 @@ import torch
 from torch.autograd.functional import jacobian
 from torch.distributions import Dirichlet, Normal, TransformedDistribution, constraints
 from torch.distributions.transforms import (AbsTransform, AffineTransform, ComposeTransform,
-                                            CorrCholeskyTransform, ExpTransform,
+                                            CorrCholeskyTransform, ExpTransform, IndependentTransform,
                                             LowerCholeskyTransform, PowerTransform,
                                             SigmoidTransform, TanhTransform, SoftmaxTransform,
                                             StickBreakingTransform, identity_transform, Transform,
@@ -92,7 +92,12 @@ def transform_id(x):
 
 def generate_data(transform):
     torch.manual_seed(1)
+    while isinstance(transform, IndependentTransform):
+        transform = transform.base_transform
     domain = transform.domain
+    while (isinstance(domain, constraints.independent) and
+           domain.reinterpreted_batch_ndims == 0):
+        domain = domain.base_constraint
     codomain = transform.codomain
     x = torch.empty(4, 5)
     if domain is constraints.lower_cholesky or codomain is constraints.lower_cholesky:
@@ -316,20 +321,20 @@ def test_jacobian(transform):
     except NotImplementedError:
         pytest.skip('Not implemented.')
     # Test shape
-    target_shape = x.shape[:x.dim() - transform.input_event_dim]
+    target_shape = x.shape[:x.dim() - transform.domain.event_dim]
     assert actual.shape == target_shape
 
     # Expand if required
     transform = reshape_transform(transform, x.shape)
     ndims = len(x.shape)
-    event_dim = ndims - transform.input_event_dim
+    event_dim = ndims - transform.domain.event_dim
     x_ = x.view((-1,) + x.shape[event_dim:])
     n = x_.shape[0]
     # Reshape to squash batch dims to a single batch dim
     transform = reshape_transform(transform, x_.shape)
 
     # 1. Transforms with 0 off-diagonal elements
-    if transform.input_event_dim == 0:
+    if transform.domain.event_dim == 0:
         jac = jacobian(transform, x_)
         # assert off-diagonal elements are zero
         assert torch.allclose(jac, jac.diagonal().diag_embed())

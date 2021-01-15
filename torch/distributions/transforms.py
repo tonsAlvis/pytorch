@@ -19,6 +19,7 @@ __all__ = [
     'ComposeTransform',
     'CorrCholeskyTransform',
     'ExpTransform',
+    'IndependentTransform',
     'LowerCholeskyTransform',
     'PowerTransform',
     'SigmoidTransform',
@@ -74,14 +75,9 @@ class Transform(object):
         sign (int or Tensor): For bijective univariate transforms, this
             should be +1 or -1 depending on whether transform is monotone
             increasing or decreasing.
-        event_dim (int): Number of dimensions that are correlated together in
-            the transform ``event_shape``. This should be 0 for pointwise
-            transforms, 1 for transforms that act jointly on vectors, 2 for
-            transforms that act jointly on matrices, etc.
     """
     bijective = False
     codomain: constraints.Constraint
-    event_dim = 0
 
     def __init__(self, cache_size=0):
         self._cache_size = cache_size
@@ -95,12 +91,10 @@ class Transform(object):
         super(Transform, self).__init__()
 
     @property
-    def input_event_dim(self):
-        return self.event_dim
-
-    @property
-    def output_event_dim(self):
-        return self.event_dim
+    def event_dim(self):
+        if self.domain.event_dim == self.codomain.event_dim:
+            return self.domain.event_dim
+        raise ValueError("Please use either .domain.event_dim or .codomain.event_dim")
 
     @property
     def inv(self):
@@ -195,25 +189,15 @@ class _InverseTransform(Transform):
         super(_InverseTransform, self).__init__(cache_size=transform._cache_size)
         self._inv = transform
 
-    @constraints.dependent_property
+    @constraints.dependent_property(is_discrete=False)
     def domain(self):
         assert self._inv is not None
         return self._inv.codomain
 
-    @constraints.dependent_property
+    @constraints.dependent_property(is_discrete=False)
     def codomain(self):
         assert self._inv is not None
         return self._inv.domain
-
-    @property
-    def input_event_dim(self):
-        assert self._inv is not None
-        return self._inv.output_event_dim
-
-    @property
-    def output_event_dim(self):
-        assert self._inv is not None
-        return self._inv.input_event_dim
 
     @property
     def bijective(self):
@@ -224,11 +208,6 @@ class _InverseTransform(Transform):
     def sign(self):
         assert self._inv is not None
         return self._inv.sign
-
-    @property
-    def event_dim(self):
-        assert self._inv is not None
-        return self._inv.event_dim
 
     @property
     def inv(self):
@@ -274,17 +253,35 @@ class ComposeTransform(Transform):
             return False
         return self.parts == other.parts
 
-    @constraints.dependent_property
+    @constraints.dependent_property(is_discrete=False)
     def domain(self):
         if not self.parts:
             return constraints.real
-        return self.parts[0].domain
+        domain = self.parts[0].domain
+        # Adjust event_dim to be maximum among all parts.
+        event_dim = self.parts[-1].codomain.event_dim
+        for part in reversed(self.parts):
+            event_dim += part.domain.event_dim - part.codomain.event_dim
+            event_dim = max(event_dim, part.domain.event_dim)
+        assert event_dim >= domain.event_dim
+        if event_dim > domain.event_dim:
+            domain = constraints.independent(domain, event_dim - domain.event_dim)
+        return domain
 
-    @constraints.dependent_property
+    @constraints.dependent_property(is_discrete=False)
     def codomain(self):
         if not self.parts:
             return constraints.real
-        return self.parts[-1].codomain
+        codomain = self.parts[-1].codomain
+        # Adjust event_dim to be maximum among all parts.
+        event_dim = self.parts[0].domain.event_dim
+        for part in reversed(self.parts):
+            event_dim += part.codomain.event_dim - part.domain.event_dim
+            event_dim = max(event_dim, part.codomain.event_dim)
+        assert event_dim >= codomain.event_dim
+        if event_dim > codomain.event_dim:
+            codomain = constraints.independent(codomain, event_dim - codomain.event_dim)
+        return codomain
 
     @lazy_property
     def bijective(self):
@@ -296,10 +293,6 @@ class ComposeTransform(Transform):
         for p in self.parts:
             sign = sign * p.sign
         return sign
-
-    @lazy_property
-    def event_dim(self):
-        return max(p.event_dim for p in self.parts) if self.parts else 0
 
     @property
     def inv(self):
@@ -344,6 +337,48 @@ class ComposeTransform(Transform):
 
 
 identity_transform = ComposeTransform([])
+
+
+class IndependentTransform(Transform):
+    """
+    Wrapper around another transform to treat
+    ``reinterpreted_batch_ndims``-many extra of the right most dimensions as
+    dependent. This has no effect on the forward or backward transforms, but
+    does sum out ``reinterpreted_batch_ndims``-many of the rightmost dimensions
+    in :meth:`log_abs_det_jacobian`.
+
+    Args:
+        base_transform (:class:`Transform`): A base transform.
+        reinterpreted_batch_ndims (int): The number of extra rightmost
+            dimensions to treat as dependent.
+    """
+    def __init__(self, base_transform, reinterpreted_batch_ndims, cache_size=0):
+        super().__init__(cache_size=cache_size)
+        self.base_transform = base_transform
+        self.reinterpreted_batch_ndims = reinterpreted_batch_ndims
+
+    @constraints.dependent_property(is_discrete=False)
+    def domain(self):
+        return constraints.independent(self.base_transform.domain,
+                                       self.reinterpreted_batch_ndims)
+
+    @constraints.dependent_property(is_discrete=False)
+    def codomain(self):
+        return constraints.independent(self.base_transform.codomain,
+                                       self.reinterpreted_batch_ndims)
+
+    @property
+    def bijective(self):
+        return self.base_transform.bijective
+
+    @property
+    def sign(self):
+        return self.base_transform.sign
+
+    def log_abs_det_jacobian(self, x, y):
+        result = self.base_transform.log_abs_det_jacobian(x, y)
+        result = _sum_rightmost(result, self.reinterpreted_batch_ndims)
+        return result
 
 
 class ExpTransform(Transform):
@@ -494,15 +529,25 @@ class AffineTransform(Transform):
             for univariate random variables, 1 for distributions over vectors,
             2 for distributions over matrices, etc.
     """
-    domain = constraints.real
-    codomain = constraints.real
     bijective = True
 
     def __init__(self, loc, scale, event_dim=0, cache_size=0):
         super(AffineTransform, self).__init__(cache_size=cache_size)
         self.loc = loc
         self.scale = scale
-        self.event_dim = event_dim
+        self._event_dim = event_dim
+
+    @property
+    def event_dim(self):
+        return self._event_dim
+
+    @constraints.dependent_property(is_discrete=False)
+    def domain(self):
+        return constraints.independent(constraints.real, self.event_dim)
+
+    @constraints.dependent_property(is_discrete=False)
+    def codomain(self):
+        return constraints.independent(constraints.real, self.event_dim)
 
     def with_cache(self, cache_size=1):
         if self._cache_size == cache_size:
@@ -573,13 +618,7 @@ class CorrCholeskyTransform(Transform):
     """
     domain = constraints.real_vector
     codomain = constraints.corr_cholesky
-    input_event_dim = 1
-    output_event_dim = 2
     bijective = True
-
-    @property
-    def event_dim(self):
-        raise ValueError("Please use `.input_event_dim` or `.output_event_dim` instead.")
 
     def _call(self, x):
         x = torch.tanh(x)
@@ -632,9 +671,8 @@ class SoftmaxTransform(Transform):
     coordinate-wise (except for the final normalization), and thus is
     appropriate for coordinate-wise optimization algorithms.
     """
-    domain = constraints.real
+    domain = constraints.real_vector
     codomain = constraints.simplex
-    event_dim = 1
 
     def __eq__(self, other):
         return isinstance(other, SoftmaxTransform)
@@ -662,10 +700,9 @@ class StickBreakingTransform(Transform):
     This is bijective and appropriate for use in HMC; however it mixes
     coordinates together and is less appropriate for optimization.
     """
-    domain = constraints.real
+    domain = constraints.real_vector
     codomain = constraints.simplex
     bijective = True
-    event_dim = 1
 
     def __eq__(self, other):
         return isinstance(other, StickBreakingTransform)
@@ -703,9 +740,8 @@ class LowerCholeskyTransform(Transform):
     This is useful for parameterizing positive definite matrices in terms of
     their Cholesky factorization.
     """
-    domain = constraints.real
+    domain = constraints.independent(constraints.real, 2)
     codomain = constraints.lower_cholesky
-    event_dim = 2
 
     def __eq__(self, other):
         return isinstance(other, LowerCholeskyTransform)
@@ -733,7 +769,6 @@ class CatTransform(Transform):
     """
     def __init__(self, tseq, dim=0, lengths=None, cache_size=0):
         assert all(isinstance(t, Transform) for t in tseq)
-        self.event_dim = max(t.event_dim for t in tseq)
         if cache_size:
             tseq = [t.with_cache(cache_size) for t in tseq]
         super(CatTransform, self).__init__(cache_size=cache_size)
@@ -743,6 +778,10 @@ class CatTransform(Transform):
         self.lengths = list(lengths)
         assert len(self.lengths) == len(self.transforms)
         self.dim = dim
+
+    @lazy_property
+    def event_dim(self):
+        return max(t.event_dim for t in self.transforms)
 
     @lazy_property
     def length(self):
