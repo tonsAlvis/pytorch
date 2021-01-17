@@ -430,6 +430,13 @@ class IndependentTransform(Transform):
 class ReshapeTransform(Transform):
     """
     Unit Jacobian transform to reshape the rightmost part of a tensor.
+
+    Note that ``in_shape`` and ``out_shape`` must have the same number of
+    elements, just as for :meth:`torch.Tensor.reshape`.
+
+    Arguments:
+        in_shape (torch.Size): The input event shape.
+        out_shape (torch.Size): The output event shape.
     """
     bijective = True
 

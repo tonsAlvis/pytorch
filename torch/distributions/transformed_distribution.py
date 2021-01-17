@@ -61,7 +61,6 @@ class TransformedDistribution(Distribution):
         cut = len(shape) - event_dim
         batch_shape = shape[:cut]
         event_shape = shape[cut:]
-        print(f"DEBUG {batch_shape}, {event_shape}")
         super(TransformedDistribution, self).__init__(batch_shape, event_shape, validate_args=validate_args)
 
     def expand(self, batch_shape, _instance=None):
