@@ -1,5 +1,15 @@
+// NB: Must be at the top of file to avoid including the deprecated "math.h".
+// https://stackoverflow.com/questions/6563810/m-pi-works-with-math-h-but-not-with-cmath-in-visual-studio
+#ifdef _MSC_VER
+#ifndef _USE_MATH_DEFINES
+#define _USE_MATH_DEFINES
+#endif
+#endif
+
 #include <ATen/native/TensorIterator.h>
 #include <ATen/native/cpu/Loops.h>
+#include <ATen/Dispatch.h>
+#include <ATen/Functions.h>
 
 namespace at {
 namespace native {
