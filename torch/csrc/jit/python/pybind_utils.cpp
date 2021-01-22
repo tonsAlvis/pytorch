@@ -21,6 +21,10 @@ IValue toIValue(py::handle obj, const TypePtr& type, c10::optional<int32_t> N) {
     }
     case TypeKind::FloatType:
       return py::cast<double>(obj);
+    case TypeKind::ComplexDoubleType: {
+      auto c_obj = py::cast<std::complex<double>>(obj.ptr());
+      return static_cast<c10::complex<double>>(c_obj);
+    }
     case TypeKind::IntType:
     // TODO(xintchen): Handling LayoutType and ScalarTypeType correctly.
     case TypeKind::LayoutType:
@@ -271,8 +275,6 @@ IValue toIValue(py::handle obj, const TypePtr& type, c10::optional<int32_t> N) {
       auto enum_holder =
           c10::make_intrusive<c10::ivalue::EnumHolder>(enum_type, name, value);
       return IValue(enum_holder);
-    case TypeKind::ComplexDoubleType:
-      AT_ASSERT(false);
   }
   throw py::cast_error(c10::str(
       "toIValue() cannot handle converting to type: ", type->repr_str()));
